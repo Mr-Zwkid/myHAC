@@ -1,4 +1,4 @@
-name: HAC_env
+name: 3dgs
 channels:
   - pytorch
   - pyg
