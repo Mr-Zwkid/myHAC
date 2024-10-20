@@ -48,6 +48,8 @@ from utils.image_utils import psnr
 
 bit2MB_scale = 8 * 1024 * 1024
 run_codec = True
+use_2D = True
+use_Mixed = False
 
 def saveRuntimeCode(dst: str) -> None:
     additionalIgnorePatterns = ['.git', '.gitignore']
@@ -88,6 +90,8 @@ def training(args_param, dataset, opt, pipe, dataset_name, testing_iterations, s
         n_features_per_level=args_param.n_features,
         log2_hashmap_size=args_param.log2,
         log2_hashmap_size_2D=args_param.log2_2D,
+        use_2D=use_2D,
+        use_Mixed=use_Mixed
     )
     scene = Scene(dataset, gaussians, ply_path=ply_path)
     gaussians.update_anchor_bound()

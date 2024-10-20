@@ -21,15 +21,11 @@ def get_binary_vxl_size(binary_vxl):
     pos_num = torch.sum(binary_vxl)
     neg_num = ttl_num - pos_num
 
-    Pg = pos_num / ttl_num  #  + 1e-6
+    Pg = pos_num / ttl_num
     Pg = torch.clamp(Pg, min=1e-6, max=1-1e-6)
-    pos_prob = Pg
-    neg_prob = (1 - Pg)
-    pos_bit = pos_num * (-torch.log2(pos_prob))
-    neg_bit = neg_num * (-torch.log2(neg_prob))
-    ttl_bit = pos_bit + neg_bit
-    ttl_bit += 32  # Pg
-    # print('binary_vxl:', Pg.item(), ttl_bit.item(), ttl_num, pos_num.item(), neg_num.item())
+    pos_bit = pos_num * (-torch.log2(Pg))
+    neg_bit = neg_num * (-torch.log2(1-Pg))
+    ttl_bit = pos_bit + neg_bit + 32
     return Pg, ttl_bit, ttl_bit.item()/8.0/1024/1024, ttl_num
 
 class STE_binary(torch.autograd.Function):
@@ -37,7 +33,6 @@ class STE_binary(torch.autograd.Function):
     def forward(ctx, input):
         ctx.save_for_backward(input)
         input = torch.clamp(input, min=-1, max=1)
-        # out = torch.sign(input)
         p = (input >= 0) * (+1.0)
         n = (input < 0) * (-1.0)
         out = p + n
@@ -73,13 +68,7 @@ class STE_multistep(torch.autograd.Function):
 class Quantize_anchor(torch.autograd.Function):
     @staticmethod
     def forward(ctx, anchors, min_v, max_v):
-        # if anchor_round_digits == 32:
-            # return anchors
-        # min_v = torch.min(anchors).detach()
-        # max_v = torch.max(anchors).detach()
-        # scales = 2 ** anchor_round_digits - 1
-        interval = ((max_v - min_v) * Q_anchor + 1e-6)  # avoid 0, if max_v == min_v
-        # quantized_v = (anchors - min_v) // interval
+        interval = ((max_v - min_v) * Q_anchor + 1e-6)
         quantized_v = torch.div(anchors - min_v, interval, rounding_mode='floor')
         quantized_v = torch.clamp(quantized_v, 0, 2 ** anchor_round_digits - 1)
         anchors_q = quantized_v * interval + min_v
@@ -93,13 +82,16 @@ class _grid_encode(Function):
     @staticmethod
     @custom_fwd
     def forward(ctx, inputs, embeddings, offsets_list, resolutions_list, calc_grad_inputs=False, min_level_id=None, n_levels_calc=1, binary_vxl=None, PV=0):
-        # inputs: [N, num_dim], float in [0, 1]
-        # embeddings: [sO, n_features], float. self.params = nn.Parameter(torch.empty(offset, n_features))
-        # offsets_list: [n_levels + 1], int
-        # RETURN: [N, F], float
+        '''
+            inputs: [N, num_dim]
+
+            embeddings: [... , n_features], float. self.params = nn.Parameter(torch.empty(offset, n_features))
+
+            offsets_list: [n_levels + 1], int
+
+            return: [N, F], float
+        '''
         inputs = inputs.contiguous()
-        # embeddings_mask = torch.ones(size=[embeddings.shape[0]], dtype=torch.bool, device='cuda')
-        # print('kkkkkkkkkk---000000000:', embeddings_mask.shape, embeddings.shape, embeddings_mask.sum())
 
         Rb = 128
         if binary_vxl is not None:
@@ -107,9 +99,9 @@ class _grid_encode(Function):
             Rb = binary_vxl.shape[-1]
             assert len(binary_vxl.shape) == inputs.shape[-1]
 
-        N, num_dim = inputs.shape # batch size, coord dim # N_rays, 3
-        n_levels = offsets_list.shape[0] - 1 # level # 层数=16
-        n_features = embeddings.shape[1] # embedding dim for each level # 就是channel数=2
+        N, num_dim = inputs.shape # batch size, coord dim
+        n_levels = offsets_list.shape[0] - 1 # level=16
+        n_features = embeddings.shape[1] # embedding channel for each level
 
         max_level_id = min_level_id + n_levels_calc
 
@@ -119,24 +111,18 @@ class _grid_encode(Function):
             embeddings = embeddings.to(torch.half)
 
         # n_levels first, optimize cache for cuda kernel, but needs an extra permute later
-        outputs = torch.empty(n_levels_calc, N, n_features, device=inputs.device, dtype=embeddings.dtype)  # 创建一个buffer给cuda填充
-        # outputs = [hash层数=16, N_rays, channels=2]
+        outputs = torch.empty(n_levels_calc, N, n_features, device=inputs.device, dtype=embeddings.dtype)
+        # outputs = [level, N, channel]
 
         # zero init if we only calculate partial levels
         # if n_levels_calc < n_levels: outputs.zero_()
-        if calc_grad_inputs:  # inputs.requires_grad
-            dy_dx = torch.empty(N, n_levels_calc * num_dim * n_features, device=inputs.device, dtype=embeddings.dtype)
-        else:
-            dy_dx = None
-
-        # assert embeddings.shape[0] == embeddings_mask.shape[0]
-        # assert embeddings_mask.dtype == torch.bool
+        # inputs.requires_grad
+        dy_dx = torch.empty(N, n_levels_calc * num_dim * n_features, device=inputs.device, dtype=embeddings.dtype) if calc_grad_inputs else None
 
         if isinstance(min_level_id, int):
             _backend.grid_encode_forward(
                 inputs,
                 embeddings,
-                # embeddings_mask,
                 offsets_list[min_level_id:max_level_id+1],
                 resolutions_list[min_level_id:max_level_id],
                 outputs,
@@ -149,7 +135,6 @@ class _grid_encode(Function):
             _backend.grid_encode_forward(
                 inputs,
                 embeddings,
-                # embeddings_mask,
                 offsets_list,
                 resolutions_list,
                 outputs,
@@ -159,38 +144,32 @@ class _grid_encode(Function):
                 min_level_id
                 )
 
-        # permute back to [N, n_levels * n_features]  # [N_rays, hash层数=16 * channels=2]
+        # permute back to [N, n_levels * n_features]
         outputs = outputs.permute(1, 0, 2).reshape(N, n_levels_calc * n_features)
 
         ctx.save_for_backward(inputs, embeddings, offsets_list, resolutions_list, dy_dx, binary_vxl)
-        ctx.dims = [N, num_dim, n_features, n_levels_calc, min_level_id, max_level_id, Rb, PV]  # min_level_id是否要单独save为tensor
+        ctx.dims = [N, num_dim, n_features, n_levels_calc, min_level_id, max_level_id, Rb, PV]
 
         return outputs
 
     @staticmethod
-    #@once_differentiable
     @custom_bwd
     def backward(ctx, grad):
 
         inputs, embeddings, offsets_list, resolutions_list, dy_dx, binary_vxl = ctx.saved_tensors
         N, num_dim, n_features, n_levels_calc, min_level_id, max_level_id, Rb, PV = ctx.dims
 
-        # grad: [N, n_levels * n_features] --> [n_levels, N, n_features]
+        # grad: [N, n_levels * n_features] -> [n_levels, N, n_features]
         grad = grad.view(N, n_levels_calc, n_features).permute(1, 0, 2).contiguous()
 
         grad_embeddings = torch.zeros_like(embeddings)
-
-        if dy_dx is not None:
-            grad_inputs = torch.zeros_like(inputs, dtype=embeddings.dtype)
-        else:
-            grad_inputs = None
+        grad_inputs = torch.zeros_like(inputs, dtype=embeddings.dtype) if dy_dx else None
 
         if isinstance(min_level_id, int):
             _backend.grid_encode_backward(
                 grad,
                 inputs,
                 embeddings,
-                # embeddings_mask,
                 offsets_list[min_level_id:max_level_id+1],
                 resolutions_list[min_level_id:max_level_id],
                 grad_embeddings,
@@ -205,7 +184,6 @@ class _grid_encode(Function):
                 grad,
                 inputs,
                 embeddings,
-                # embeddings_mask,
                 offsets_list,
                 resolutions_list,
                 grad_embeddings,
@@ -220,7 +198,9 @@ class _grid_encode(Function):
             grad_inputs = grad_inputs.to(inputs.dtype)
 
         return grad_inputs, grad_embeddings, None, None, None, None, None, None, None, None
-grid_encode = _grid_encode.apply
+        
+# grid_encode = _grid_encode.apply
+
 class GridEncoder(nn.Module):
     def __init__(self,
                  num_dim=3,
@@ -237,10 +217,10 @@ class GridEncoder(nn.Module):
         resolutions_list = torch.tensor(resolutions_list).to(torch.int)
         n_levels = resolutions_list.numel()
 
-        self.num_dim = num_dim # coord dims, 2 or 3
-        self.n_levels = n_levels # num levels, each level multiply resolution by 2
-        self.n_features = n_features # encode channels per level
-        self.log2_hashmap_size = log2_hashmap_size
+        self.num_dim = num_dim # number of dims, 2 or 3
+        self.n_levels = n_levels # number of levers
+        self.n_features = n_features # number of features per channel of a level
+        self.max_params = 2 ** log2_hashmap_size # maximum number of total parameters
         self.output_dim = n_levels * n_features
         self.ste_binary = ste_binary
         self.ste_multistep = ste_multistep
@@ -248,28 +228,26 @@ class GridEncoder(nn.Module):
         self.Q = Q
 
         # allocate parameters
-        offsets_list = []
         offset = 0
-        self.max_params = 2 ** log2_hashmap_size
+        offsets_list = []
         for i in range(n_levels):
             resolution = resolutions_list[i].item()
-            params_in_level = min(self.max_params, resolution ** num_dim)  # limit max number
-            params_in_level = int(np.ceil(params_in_level / 8) * 8)  # make divisible
+            params_in_level = min(self.max_params, resolution ** num_dim)
+            params_in_level = int(np.ceil(params_in_level / 8) * 8)  # make it divisible
             offsets_list.append(offset)
             offset += params_in_level
         offsets_list.append(offset)
         offsets_list = torch.from_numpy(np.array(offsets_list, dtype=np.int32))
+
         self.register_buffer('offsets_list', offsets_list)
         self.register_buffer('resolutions_list', resolutions_list)
 
-        self.n_params = offsets_list[-1] * n_features
+        self.n_params = offsets_list[-1] * n_features # actral number of total parameters
 
         # parameters
         self.params = nn.Parameter(torch.empty(offset, n_features))
 
         self.reset_parameters()
-
-        self.n_output_dims = n_levels * n_features
 
     def reset_parameters(self):
         std = 1e-4
@@ -290,6 +268,7 @@ class GridEncoder(nn.Module):
         else:
             params = self.params
 
+        # process parameters due to different settings
         if self.ste_binary:
             embeddings = STE_binary.apply(params)
             # embeddings = params
@@ -299,13 +278,15 @@ class GridEncoder(nn.Module):
             embeddings = STE_multistep.apply(params, self.Q)
         else:
             embeddings = params
-        # embeddings = embeddings * 0  # for ablation
+            
+        # for ablation
+        # embeddings = embeddings * 0  
 
         min_level_id = 0 if min_level_id is None else max(min_level_id, 0)
         max_level_id = self.n_levels if max_level_id is None else min(max_level_id, self.n_levels)
         n_levels_calc = max_level_id - min_level_id
 
-        outputs = grid_encode(inputs, embeddings, self.offsets_list, self.resolutions_list, inputs.requires_grad, min_level_id, n_levels_calc, binary_vxl, PV)
+        outputs = _grid_encode.apply(inputs, embeddings, self.offsets_list, self.resolutions_list, inputs.requires_grad, min_level_id, n_levels_calc, binary_vxl, PV)
         outputs = outputs.view(prefix_shape + [n_levels_calc * self.n_features])
 
         return outputs

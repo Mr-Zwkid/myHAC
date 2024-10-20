@@ -1,14 +1,3 @@
-#
-# Copyright (C) 2023, Inria
-# GRAPHDECO research group, https://team.inria.fr/graphdeco
-# All rights reserved.
-#
-# This software is free for non-commercial, research and evaluation use 
-# under the terms of the LICENSE.md file.
-#
-# For inquiries contact  george.drettakis@inria.fr
-#
-
 import os
 import time
 from functools import reduce
@@ -25,20 +14,12 @@ from utils.general_utils import (build_scaling_rotation, get_expon_lr_func,
 from utils.graphics_utils import BasicPointCloud
 from utils.system_utils import mkdir_p
 from utils.entropy_models import Entropy_bernoulli, Entropy_gaussian, Entropy_factorized
-
-from utils.encodings import \
-    STE_binary, STE_multistep, Quantize_anchor, \
-    GridEncoder, Q_anchor, \
-    anchor_round_digits, \
-    get_binary_vxl_size
-
-from utils.encodings_cuda import \
-    encoder, decoder, \
-    encoder_gaussian_chunk, decoder_gaussian_chunk
+from utils.encodings import STE_binary, STE_multistep, Quantize_anchor, GridEncoder, Q_anchor, anchor_round_digits, get_binary_vxl_size
+from utils.encodings_cuda import encoder, decoder, encoder_gaussian_chunk, decoder_gaussian_chunk
 
 bit2MB_scale = 8 * 1024 * 1024
 
-class mix_3D2D_encoding(nn.Module):
+class Mix_3D2D_encoding(nn.Module):
     def __init__(
             self,
             n_features,
@@ -50,7 +31,7 @@ class mix_3D2D_encoding(nn.Module):
             ste_multistep,
             add_noise,
             Q,
-    ):
+        ):
         super().__init__()
         self.encoding_xyz = GridEncoder(
             num_dim=3,
@@ -105,6 +86,59 @@ class mix_3D2D_encoding(nn.Module):
         out_yz = self.encoding_yz(torch.cat([y_y, z_z], dim=-1))  # [..., 2*4]
         out_i = torch.cat([out_xyz, out_xy, out_xz, out_yz], dim=-1)  # [..., 56]
         return out_i
+    
+class Triplane_2D_encoding(nn.Module):
+        def __init__(
+            self,
+            n_features,
+            resolutions_list_2D,
+            log2_hashmap_size_2D,
+            ste_binary,
+            ste_multistep,
+            add_noise,
+            Q,
+        ):
+            super().__init__()
+            self.encoding_xy = GridEncoder(
+                num_dim=2,
+                n_features=n_features,
+                resolutions_list=resolutions_list_2D,
+                log2_hashmap_size=log2_hashmap_size_2D,
+                ste_binary=ste_binary,
+                ste_multistep=ste_multistep,
+                add_noise=add_noise,
+                Q=Q,
+            )
+            self.encoding_xz = GridEncoder(
+                num_dim=2,
+                n_features=n_features,
+                resolutions_list=resolutions_list_2D,
+                log2_hashmap_size=log2_hashmap_size_2D,
+                ste_binary=ste_binary,
+                ste_multistep=ste_multistep,
+                add_noise=add_noise,
+                Q=Q,
+            )
+            self.encoding_yz = GridEncoder(
+                num_dim=2,
+                n_features=n_features,
+                resolutions_list=resolutions_list_2D,
+                log2_hashmap_size=log2_hashmap_size_2D,
+                ste_binary=ste_binary,
+                ste_multistep=ste_multistep,
+                add_noise=add_noise,
+                Q=Q,
+            )
+            self.output_dim = self.encoding_xy.output_dim + self.encoding_xz.output_dim + self.encoding_yz.output_dim
+
+        def forward(self, x):
+            x_x, y_y, z_z = torch.chunk(x, 3, dim=-1)
+            out_xy = self.encoding_xy(torch.cat([x_x, y_y], dim=-1))  # [..., 2*4]
+            out_xz = self.encoding_xz(torch.cat([x_x, z_z], dim=-1))  # [..., 2*4]
+            out_yz = self.encoding_yz(torch.cat([y_y, z_z], dim=-1))  # [..., 2*4]
+            out_i = torch.cat([out_xy, out_xz, out_yz], dim=-1)  # [..., 24]
+            return out_i
+    
 
 class GaussianModel(nn.Module):
 
@@ -138,15 +172,12 @@ class GaussianModel(nn.Module):
                  ste_binary: bool=True,
                  ste_multistep: bool=False,
                  add_noise: bool=False,
-                 Q=1,
-                 use_2D: bool=True,
+                 Q: int=1,
+                 use_2D: bool=False,
+                 use_Mixed: bool=False,
                  decoded_version: bool=False,
                  ):
         super().__init__()
-        print('hash_params:', use_2D, n_features_per_level,
-              log2_hashmap_size, resolutions_list,
-              log2_hashmap_size_2D, resolutions_list_2D,
-              ste_binary, ste_multistep, add_noise)
 
         self.feat_dim = feat_dim
         self.n_offsets = n_offsets
@@ -158,8 +189,6 @@ class GaussianModel(nn.Module):
         self.x_bound_min = torch.zeros(size=[1, 3], device='cuda')
         self.x_bound_max = torch.ones(size=[1, 3], device='cuda')
         self.n_features_per_level = n_features_per_level
-        self.log2_hashmap_size = log2_hashmap_size
-        self.log2_hashmap_size_2D = log2_hashmap_size_2D
         self.resolutions_list = resolutions_list
         self.resolutions_list_2D = resolutions_list_2D
         self.ste_binary = ste_binary
@@ -167,6 +196,7 @@ class GaussianModel(nn.Module):
         self.add_noise = add_noise
         self.Q = Q
         self.use_2D = use_2D
+        self.use_Mixed = use_Mixed
         self.decoded_version = decoded_version
 
         self._anchor = torch.empty(0)
@@ -191,11 +221,21 @@ class GaussianModel(nn.Module):
         self.spatial_lr_scale = 0
         self.setup_functions()
 
-        if use_2D:
-            self.encoding_xyz = mix_3D2D_encoding(
+        if use_Mixed:
+            self.encoding_xyz = Mix_3D2D_encoding(
                 n_features=n_features_per_level,
                 resolutions_list=resolutions_list,
                 log2_hashmap_size=log2_hashmap_size,
+                resolutions_list_2D=resolutions_list_2D,
+                log2_hashmap_size_2D=log2_hashmap_size_2D,
+                ste_binary=ste_binary,
+                ste_multistep=ste_multistep,
+                add_noise=add_noise,
+                Q=Q,
+            ).cuda()
+        elif use_2D:
+            self.encoding_xyz = Triplane_2D_encoding(
+                n_features=n_features_per_level,
                 resolutions_list_2D=resolutions_list_2D,
                 log2_hashmap_size_2D=log2_hashmap_size_2D,
                 ste_binary=ste_binary,
@@ -270,17 +310,20 @@ class GaussianModel(nn.Module):
 
     def get_encoding_params(self):
         params = []
-        if self.use_2D:
+        if self.use_Mixed:
             params.append(self.encoding_xyz.encoding_xyz.params)
+            params.append(self.encoding_xyz.encoding_xy.params)
+            params.append(self.encoding_xyz.encoding_xz.params)
+            params.append(self.encoding_xyz.encoding_yz.params)
+        elif self.use_2D:
             params.append(self.encoding_xyz.encoding_xy.params)
             params.append(self.encoding_xyz.encoding_xz.params)
             params.append(self.encoding_xyz.encoding_yz.params)
         else:
             params.append(self.encoding_xyz.params)
         params = torch.cat(params, dim=0)
-        if self.ste_binary:
-            params = STE_binary.apply(params)
-        return params
+        
+        return STE_binary.apply(params) if self.ste_binary else params
 
     def get_mlp_size(self, digit=32):
         mlp_size = 0
@@ -1325,14 +1368,18 @@ class GaussianModel(nn.Module):
         self._mask = nn.Parameter(_mask)
 
         if self.ste_binary:
-            if self.use_2D:
+            if self.use_Mixed:
                 len_3D = self.encoding_xyz.encoding_xyz.params.shape[0]
                 len_2D = self.encoding_xyz.encoding_xy.params.shape[0]
-                # print(len_3D, len_2D, hash_embeddings.shape)
                 self.encoding_xyz.encoding_xyz.params = nn.Parameter(hash_embeddings[0:len_3D])
                 self.encoding_xyz.encoding_xy.params = nn.Parameter(hash_embeddings[len_3D:len_3D+len_2D])
                 self.encoding_xyz.encoding_xz.params = nn.Parameter(hash_embeddings[len_3D+len_2D:len_3D+len_2D*2])
                 self.encoding_xyz.encoding_yz.params = nn.Parameter(hash_embeddings[len_3D+len_2D*2:len_3D+len_2D*3])
+            elif self.use_2D:
+                len_2D = self.encoding_xyz.encoding_xy.params.shape[0]
+                self.encoding_xyz.encoding_xy.params = nn.Parameter(hash_embeddings[0:len_2D])
+                self.encoding_xyz.encoding_xz.params = nn.Parameter(hash_embeddings[len_2D:len_2D*2])
+                self.encoding_xyz.encoding_yz.params = nn.Parameter(hash_embeddings[len_2D*2:len_2D*3])
             else:
                 self.encoding_xyz.params = nn.Parameter(hash_embeddings)
 
