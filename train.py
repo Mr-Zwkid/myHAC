@@ -146,7 +146,7 @@ def training(args_param, dataset, opt, pipe, dataset_name, testing_iterations, s
         voxel_visible_mask = prefilter_voxel(viewpoint_cam, gaussians, pipe, background)
         # voxel_visible_mask:bool = radii_pure > 0: 应该是[N_anchor]?
         retain_grad = (iteration < opt.update_until and iteration >= 0)
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background, visible_mask=voxel_visible_mask, retain_grad=retain_grad, step=iteration)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background, visible_mask=voxel_visible_mask, retain_grad=retain_grad, step=iteration, opt = opt)
         image, viewspace_point_tensor, visibility_filter, offset_selection_mask, radii, scaling, opacity = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["selection_mask"], render_pkg["radii"], render_pkg["scaling"], render_pkg["neural_opacity"]
         # image: [3, H, W]. inited as: torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
         # viewspace_point_tensor=screenspace_points: [N_opacity_pos_gaussian, 3]
@@ -415,6 +415,8 @@ def render_sets(args_param, dataset : ModelParams, iteration : int, pipeline : P
             n_features_per_level=args_param.n_features,
             log2_hashmap_size=args_param.log2,
             log2_hashmap_size_2D=args_param.log2_2D,
+            use_2D=use_2D,
+            use_Mixed=use_Mixed,
             decoded_version=run_codec,
         )
         scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)

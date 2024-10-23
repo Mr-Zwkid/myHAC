@@ -2,3 +2,4 @@ submodules
 data
 outputs
 *.pyc
+*.json

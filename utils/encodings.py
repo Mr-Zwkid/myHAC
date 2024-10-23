@@ -163,7 +163,7 @@ class _grid_encode(Function):
         grad = grad.view(N, n_levels_calc, n_features).permute(1, 0, 2).contiguous()
 
         grad_embeddings = torch.zeros_like(embeddings)
-        grad_inputs = torch.zeros_like(inputs, dtype=embeddings.dtype) if dy_dx else None
+        grad_inputs = torch.zeros_like(inputs, dtype=embeddings.dtype) if dy_dx is not None else None
 
         if isinstance(min_level_id, int):
             _backend.grid_encode_backward(

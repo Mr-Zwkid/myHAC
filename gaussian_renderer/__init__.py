@@ -22,7 +22,7 @@ from scene.gaussian_model import GaussianModel
 from utils.encodings import STE_binary, STE_multistep
 
 
-def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask=None, is_training=False, step=0):
+def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask=None, is_training=False, step=0, opt=None):
     ## view frustum filtering for acceleration
 
     time_sub = 0
@@ -48,16 +48,16 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
     Q_scaling = 0.001
     Q_offsets = 0.2
     if is_training:
-        if step > 3000 and step <= 10000:
+        if step > opt.start_quantization_single and step <= opt.change_quantization_single_to_variable:
             # quantization
             feat = feat + torch.empty_like(feat).uniform_(-0.5, 0.5) * Q_feat
             grid_scaling = grid_scaling + torch.empty_like(grid_scaling).uniform_(-0.5, 0.5) * Q_scaling
             grid_offsets = grid_offsets + torch.empty_like(grid_offsets).uniform_(-0.5, 0.5) * Q_offsets
 
-        if step == 10000:
+        if step == opt.change_quantization_single_to_variable:
             pc.update_anchor_bound()
 
-        if step > 10000:
+        if step > opt.change_quantization_single_to_variable:
             feat_context = pc.calc_interp_feat(anchor)
             feat_context = pc.get_grid_mlp(feat_context)
             mean, scale, mean_scaling, scale_scaling, mean_offsets, scale_offsets, Q_feat_adj, Q_scaling_adj, Q_offsets_adj = \
@@ -172,7 +172,7 @@ def generate_neural_gaussians(viewpoint_camera, pc : GaussianModel, visible_mask
         return xyz, color, opacity, scaling, rot, time_sub
 
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, visible_mask=None, retain_grad=False, step=0):
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, visible_mask=None, retain_grad=False, step=0, opt = None):
     """
     Render the scene.
 
@@ -181,9 +181,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     is_training = pc.get_color_mlp.training
 
     if is_training:
-        xyz, color, opacity, scaling, rot, neural_opacity, mask, bit_per_param, bit_per_feat_param, bit_per_scaling_param, bit_per_offsets_param = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, step=step)
+        xyz, color, opacity, scaling, rot, neural_opacity, mask, bit_per_param, bit_per_feat_param, bit_per_scaling_param, bit_per_offsets_param = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, step=step, opt=opt)
     else:
-        xyz, color, opacity, scaling, rot, time_sub = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, step=step)
+        xyz, color, opacity, scaling, rot, time_sub = generate_neural_gaussians(viewpoint_camera, pc, visible_mask, is_training=is_training, step=step, opt=opt)
 
     screenspace_points = torch.zeros_like(xyz, dtype=pc.get_anchor.dtype, requires_grad=True, device="cuda") + 0
     if retain_grad:

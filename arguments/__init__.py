@@ -143,6 +143,10 @@ class OptimizationParams(ParamGroup):
         self.update_from = 1500
         self.update_interval = 100
         self.update_until = 15_000
+
+        # for training phases changing
+        self.start_quantization_single = 3000
+        self.change_quantization_single_to_variable = 10000
         
         self.min_opacity = 0.005  # 0.2
         self.success_threshold = 0.8
