@@ -45,6 +45,17 @@ def plot_hist_scale(scale_feat, scale_scaling, scale_offsets, save_path=''):
 
 
 def plot_RD_curve(metric='psnr', save_path='', notation=False, filter:list=None):  
+    '''
+        Plot R-D Curve in one experiment
+
+        metric: ['psnr', 'ssim', 'lpips', 'fps']
+
+        save_path: path to save the curve
+
+        notation: True/False, whether to notate the lambda in corresponding points
+
+        filter: list of str that will be excluded in plotting
+    '''
     plt.figure(figsize=[15, 12], dpi=100)  
     
     # 存储所有的 x 和 y 数据以便后续设置坐标轴范围  

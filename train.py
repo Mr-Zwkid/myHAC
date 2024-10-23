@@ -168,16 +168,16 @@ def training(args_param, dataset, opt, pipe, dataset_name, testing_iterations, s
             ttl_size_offsets_MB = bit_per_offsets_param.item() * gaussians.get_anchor.shape[0] * 3 * gaussians.n_offsets / bit2MB_scale
             ttl_size_MB = ttl_size_feat_MB + ttl_size_scaling_MB + ttl_size_offsets_MB
 
-            logger.info("\n----------------------------------------------------------------------------------------")
-            logger.info("\n-----[ITER {}] bits info: bit_per_feat_param={}, anchor_num={}, ttl_size_feat_MB={}-----".format(iteration, bit_per_feat_param.item(), gaussians.get_anchor.shape[0], ttl_size_feat_MB))
-            logger.info("\n-----[ITER {}] bits info: bit_per_scaling_param={}, anchor_num={}, ttl_size_scaling_MB={}-----".format(iteration, bit_per_scaling_param.item(), gaussians.get_anchor.shape[0], ttl_size_scaling_MB))
-            logger.info("\n-----[ITER {}] bits info: bit_per_offsets_param={}, anchor_num={}, ttl_size_offsets_MB={}-----".format(iteration, bit_per_offsets_param.item(), gaussians.get_anchor.shape[0], ttl_size_offsets_MB))
-            logger.info("\n-----[ITER {}] bits info: bit_per_param={}, anchor_num={}, ttl_size_MB={}-----".format(iteration, bit_per_param.item(), gaussians.get_anchor.shape[0], ttl_size_MB))
+            logger.info("-"*50)
+            logger.info("[ITER {}] bits info: bit_per_feat_param={}, anchor_num={}, ttl_size_feat_MB={}".format(iteration, bit_per_feat_param.item(), gaussians.get_anchor.shape[0], ttl_size_feat_MB))
+            logger.info("[ITER {}] bits info: bit_per_scaling_param={}, anchor_num={}, ttl_size_scaling_MB={}".format(iteration, bit_per_scaling_param.item(), gaussians.get_anchor.shape[0], ttl_size_scaling_MB))
+            logger.info("[ITER {}] bits info: bit_per_offsets_param={}, anchor_num={}, ttl_size_offsets_MB={}".format(iteration, bit_per_offsets_param.item(), gaussians.get_anchor.shape[0], ttl_size_offsets_MB))
+            logger.info("[ITER {}] bits info: bit_per_param={}, anchor_num={}, ttl_size_MB={}".format(iteration, bit_per_param.item(), gaussians.get_anchor.shape[0], ttl_size_MB))
             with torch.no_grad():
                 grid_masks = gaussians._mask.data
                 binary_grid_masks = (torch.sigmoid(grid_masks) > 0.01).float()
                 mask_1_rate, mask_size_bit, mask_size_MB, mask_numel = get_binary_vxl_size(binary_grid_masks + 0.0)  # [0, 1] -> [-1, 1]
-            logger.info("\n-----[ITER {}] bits info: 1_rate_mask={}, mask_numel={}, mask_size_MB={}-----".format(iteration, mask_1_rate, mask_numel, mask_size_MB))
+            logger.info("[ITER {} lambda={}] bits info: rate_mask={}, mask_numel={}, mask_size_MB={}".format(iteration,args_param.lmbda, mask_1_rate, mask_numel, mask_size_MB))
 
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -209,7 +209,7 @@ def training(args_param, dataset, opt, pipe, dataset_name, testing_iterations, s
 
             # Log and save
             torch.cuda.synchronize(); t_start_log = time.time()
-            training_report(dataset_name, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), wandb, logger, args_param.model_path)
+            training_report(dataset_name, iteration, Ll1, loss, l1_loss, iter_start.elapsed_time(iter_end), testing_iterations, scene, render, (pipe, background), wandb, logger, args_param.model_path, args_param.lmbda)
             if (iteration in saving_iterations):
                 logger.info("\n[ITER {}] Saving Gaussians".format(iteration))
                 scene.save(iteration)
@@ -264,7 +264,7 @@ def prepare_output_and_logger(args):
 
 
 
-def training_report(dataset_name, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, wandb=None, logger=None, pre_path_name=''):
+def training_report(dataset_name, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, wandb=None, logger=None, pre_path_name='', l=None):
 
     if wandb is not None:
         wandb.log({"train_l1_loss":Ll1, 'train_total_loss':loss, })
@@ -332,7 +332,7 @@ def training_report(dataset_name, iteration, Ll1, loss, l1_loss, elapsed, testin
                     ssim_test /= len(config['cameras'])
                     lpips_test /= len(config['cameras'])
                     l1_test /= len(config['cameras'])
-                    logger.info("\n[ITER {}] Evaluating {}: L1 {} PSNR {} ssim {} lpips {}".format(iteration, config['name'], l1_test, psnr_test, ssim_test, lpips_test))
+                    logger.info("\n[ITER {} lambda={}] Evaluating {}: L1 {} PSNR {} ssim {} lpips {}".format(iteration, l, config['name'], l1_test, psnr_test, ssim_test, lpips_test))
                     test_fps = 1.0 / torch.tensor(t_list[0:]).mean()
                     logger.info(f'Test FPS: {test_fps.item():.5f}')
 
@@ -561,7 +561,6 @@ if __name__ == "__main__":
     parser.add_argument("--log2", type=int, default = 13)
     parser.add_argument("--log2_2D", type=int, default = 15)
     parser.add_argument("--n_features", type=int, default = 4)
-    parser.add_argument("--lmbda", type=float, default = 0.001)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
     args.test_iterations.append(args.iterations)

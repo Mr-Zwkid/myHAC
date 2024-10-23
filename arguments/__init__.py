@@ -137,6 +137,7 @@ class OptimizationParams(ParamGroup):
 
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        self.lmbda = 0.005
         
         # for anchor densification
         self.start_stat = 500
